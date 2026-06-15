@@ -16,20 +16,26 @@ st.write(f"Analyzing: {ticker}")
 if st.button("Predict"):
 
     data = yf.download(
-        ticker,
-        period="10y",
-        auto_adjust=True
-    )
+    ticker,
+    period="10y",
+    auto_adjust=True,
+    multi_level_index=False
+)
 
+    # Make sure Close is a Series
+    data["Close"] = data["Close"].squeeze()
+
+# Features
     data["Return"] = data["Close"].pct_change()
 
     data["MA10"] = data["Close"].rolling(10).mean()
 
     data["MA50"] = data["Close"].rolling(50).mean()
 
+# RSI
     data["RSI"] = RSIIndicator(
-        close=data["Close"],
-        window=14
+    close=data["Close"],
+    window=14
     ).rsi()
 
     data["Target"] = (
