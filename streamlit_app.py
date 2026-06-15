@@ -1,151 +1,105 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-import math
-from pathlib import Path
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+from ta.momentum import RSIIndicator
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+st.title("SBIN.NS 30-Day Stock Movement Predictor")
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+ticker = "SBIN.NS"
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+st.write(f"Analyzing: {ticker}")
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+if st.button("Predict"):
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+    data = yf.download(
+        ticker,
+        period="10y",
+        auto_adjust=True
     )
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    data["Return"] = data["Close"].pct_change()
 
-    return gdp_df
+    data["MA10"] = data["Close"].rolling(10).mean()
 
-gdp_df = get_gdp_data()
+    data["MA50"] = data["Close"].rolling(50).mean()
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+    data["RSI"] = RSIIndicator(
+        close=data["Close"],
+        window=14
+    ).rsi()
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+    data["Target"] = (
+        data["Close"].shift(-30)
+        > data["Close"]
+    ).astype(int)
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+    data.dropna(inplace=True)
 
-# Add some spacing
-''
-''
+    X = data[
+        ["Return", "MA10", "MA50", "RSI"]
+    ]
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+    y = data["Target"]
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        shuffle=False
+    )
 
-countries = gdp_df['Country Code'].unique()
+    model = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=8,
+        random_state=42
+    )
 
-if not len(countries):
-    st.warning("Select at least one country")
+    model.fit(X_train, y_train)
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
+    preds = model.predict(X_test)
 
-''
-''
-''
+    accuracy = accuracy_score(y_test, preds)
 
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
+    st.subheader("Model Accuracy")
 
-st.header('GDP over time', divider='gray')
+    st.write(f"{accuracy*100:.2f}%")
 
-''
+    latest = X.iloc[-1:]
 
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
+    prediction = model.predict(latest)[0]
 
-''
-''
+    probability = model.predict_proba(latest)[0]
 
+    st.subheader("Prediction for Next 30 Days")
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+    if prediction == 1:
 
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+        st.success(
+            "📈 SBIN.NS is predicted to go UP in the next 30 days"
         )
+
+        st.write(
+            f"Confidence: {probability[1]*100:.2f}%"
+        )
+
+    else:
+
+        st.error(
+            "SBIN.NS is predicted to go DOWN in the next 30 days"
+        )
+
+        st.write(
+            f"Confidence: {probability[0]*100:.2f}%"
+        )
+
+    st.subheader("Latest Closing Price")
+
+    st.write(f"₹ {data['Close'].iloc[-1]:.2f}")
+
+    st.subheader("SBIN.NS Closing Price History")
+
+    st.line_chart(data["Close"])
